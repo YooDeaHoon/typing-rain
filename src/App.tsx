@@ -1,14 +1,14 @@
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Typing Rain – v15 FULL (Sheets + Multilingual + UX polish) + Mixed-mode spawn
- *
- * Fixes applied for TS build errors:
- * - WordMap: interface -> type alias using Partial<Record<LangKey, string>>
- * - JSX.Element -> React.ReactElement
- * - Safe property access for last-solved variants
- * - Removed unused local 'onInput' declaration (TS6133)
+ * 
+ * Added features (per request):
+ * - Auto focus input when Start pressed
+ * - F2 global shortcut to Start (only when not running)
+ * - Score frozen when lives == 0 (input still allowed; entities can still be cleared)
+ * 
+ * No truncation / full source. Fix1: avoid parameter destructuring in .filter to satisfy certain Babel parsers.
  */
 
 // ============================
@@ -18,10 +18,9 @@ type LangKey = "ko" | "en" | "vi" | "th";
 type WordId = string;
 type ToneMode = "strict" | "lenient"; // vi only
 
-// FIX: mapped type must be a type alias (TS7061). Also allows indexing by LangKey.
-type WordMap = Partial<Record<LangKey, string>>;
+export type WordMap = Partial<Record<LangKey, string>>;
 
-interface Sentence {
+export interface Sentence {
   id: WordId;
   map: WordMap;
   weight?: number;
@@ -32,26 +31,26 @@ interface FallingEntity {
   id: string;
   key: WordId;
   text: string;
-  x: number; // px from left (clamped)
-  y: number; // px from top
-  vy: number; // px/s
-  bornAt: number; // perf.now()
-  width: number; // measured at spawn
+  x: number;
+  y: number;
+  vy: number;
+  bornAt: number;
+  width: number;
 }
 
 // ============================
 // Constants & defaults
 // ============================
-const GAME_HEIGHT = 420; // px
-const FLOOR_OFFSET = 60; // px above bottom considered fail
-const H_MARGIN = 12; // left/right safety
-const PAD_X = 14; // box horizontal padding
-const BORDER_W = 1; // box border
+const GAME_HEIGHT = 420;
+const FLOOR_OFFSET = 60;
+const H_MARGIN = 12;
+const PAD_X = 14;
+const BORDER_W = 1;
 const FONT_FAMILY =
   "Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif";
 const FONT_SIZE_PX = 16;
 
-const WORDS_DEFAULT: Record<WordId, WordMap> = {
+export const WORDS_DEFAULT: Record<WordId, WordMap> = {
   apple: { ko: "사과", en: "apple", vi: "táo", th: "แอปเปิล" },
   car: { ko: "자동차", en: "car", vi: "ô tô", th: "รถยนต์" },
   person: { ko: "사람", en: "person", vi: "người", th: "คน" },
@@ -146,7 +145,7 @@ function findCrossPrefixMatch(
   toneMode: ToneMode,
   words: Record<WordId, WordMap>
 ): CrossPreview {
-  const variants = words[wordId] || {};
+  const variants: WordMap = words[wordId] || {};
   if (
     variants[displayLang] &&
     startsWithForLang(variants[displayLang]!, input, displayLang, toneMode)
@@ -161,10 +160,7 @@ function findCrossPrefixMatch(
   const langs: LangKey[] = ["ko", "en", "vi", "th"];
   for (const lg of langs) {
     if (lg === displayLang) continue;
-    if (
-      variants[lg] &&
-      startsWithForLang(variants[lg]!, input, lg, toneMode)
-    ) {
+    if (variants[lg] && startsWithForLang(variants[lg]!, input, lg, toneMode)) {
       return {
         ok: true,
         isCross: true,
@@ -181,7 +177,7 @@ function anyFullEqual(
   toneMode: ToneMode,
   words: Record<WordId, WordMap>
 ): boolean {
-  const variants = words[wordId] || {};
+  const variants: WordMap = words[wordId] || {};
   const langs: LangKey[] = ["ko", "en", "vi", "th"];
   for (const lg of langs) {
     const v = variants[lg];
@@ -338,15 +334,13 @@ function buildRuntimeFromCsv(text: string): {
 // Engine hook
 // ============================
 function useTypingRainEngine() {
-  // Settings (launch defaults; user overrides persist)
   const [lang, setLang] = useState<LangKey>("ko");
-  const [toneMode, setToneMode] = useState<ToneMode>("strict"); // visible only on vi
-  const [speed, setSpeed] = useState(35); // px/s
+  const [toneMode, setToneMode] = useState<ToneMode>("strict");
+  const [speed, setSpeed] = useState(35);
   const [spawnMs, setSpawnMs] = useState(1800);
   const [maxConcurrent, setMaxConcurrent] = useState(5);
   const [timeLimit, setTimeLimit] = useState(120);
 
-  // Runtime state
   const [running, setRunning] = useState(false);
   const [entities, setEntities] = useState<FallingEntity[]>([]);
   const [score, setScore] = useState(0);
@@ -356,27 +350,25 @@ function useTypingRainEngine() {
   const [banner, setBanner] = useState<string | null>(null);
   const [lastSolvedId, setLastSolvedId] = useState<WordId | null>(null);
 
-  // Runtime data source (Sheets override)
   const [wordsRt, setWordsRt] = useState<Record<WordId, WordMap> | null>(null);
   const [sampleRt, setSampleRt] = useState<Sentence[] | null>(null);
 
-  // Preview state
   const [previewTargetId, setPreviewTargetId] = useState<string | null>(null);
   const [previewLen, setPreviewLen] = useState<number>(0);
   const [previewLabel, setPreviewLabel] = useState<string>("");
   const [previewIsCross, setPreviewIsCross] = useState<boolean>(false);
   const [previewCrossInfo, setPreviewCrossInfo] = useState<string>("");
 
-  // Error feedback & guide
   const [errorFx, setErrorFx] = useState(false);
   const [guideMsg, setGuideMsg] = useState<string>("");
   const lastErrorAtRef = useRef<number>(0);
   const ERROR_COOLDOWN_MS = 450;
   const GUIDE_DURATION_MS = 1000;
 
-  // Refs
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
   const rng = useRng();
-  const lastSpawnRef = useRef(0); // ms accum
+  const lastSpawnRef = useRef(0);
   const lastTsRef = useRef<number | null>(null);
   const fieldRef = useRef<HTMLDivElement | null>(null);
   const entsRef = useRef<FallingEntity[]>([]);
@@ -388,7 +380,6 @@ function useTypingRainEngine() {
     measureRef.current = makeTextMeasurer();
   }, []);
 
-  // Settings persistence
   useEffect(() => {
     try {
       const raw = localStorage.getItem("tr_settings");
@@ -412,7 +403,6 @@ function useTypingRainEngine() {
     } catch {}
   }, [spawnMs, speed, maxConcurrent]);
 
-  // Data source persistence (cached CSV)
   useEffect(() => {
     try {
       const raw = localStorage.getItem("tr_words_cache");
@@ -432,7 +422,6 @@ function useTypingRainEngine() {
   const getWords = () => wordsRt ?? WORDS_DEFAULT;
   const getSample = () => sampleRt ?? SAMPLE_DEFAULT;
 
-  // Layout: clamp on resize
   useEffect(() => {
     const onResize = () => {
       const fieldW = fieldRef.current?.clientWidth ?? 0;
@@ -514,6 +503,7 @@ function useTypingRainEngine() {
     reset();
     setRunning(true);
     if (entsRef.current.length < maxConcurrent) spawnOne();
+    setTimeout(() => inputRef.current?.focus(), 0);
   };
   const pause = () => setRunning(false);
 
@@ -551,7 +541,7 @@ function useTypingRainEngine() {
         e,
         m: findCrossPrefixMatch(e.key, v, lang, toneMode, W),
       }))
-      .filter(({ m }) => m.ok);
+      .filter((p) => p.m.ok);
     if (cands.length === 0) {
       setPreviewTargetId(null);
       setPreviewLen(0);
@@ -575,8 +565,6 @@ function useTypingRainEngine() {
     }
   };
 
-  // NOTE: removed unused const onInput (TS6133). We inline it in return.
-
   const confirmInput = () => {
     const v = input;
     if (!v) return;
@@ -588,7 +576,7 @@ function useTypingRainEngine() {
           e,
           m: findCrossPrefixMatch(e.key, v, lang, toneMode, W),
         }))
-        .filter(({ m }) => m.ok);
+        .filter((p) => p.m.ok);
       if (cands.length === 0) {
         const now = performance.now();
         if (now - lastErrorAtRef.current >= ERROR_COOLDOWN_MS) {
@@ -605,11 +593,13 @@ function useTypingRainEngine() {
       const target = pick.e;
       const fullMatch = anyFullEqual(target.key, v, toneMode, W);
       if (fullMatch) {
-        const base = 100 + Math.max(0, target.text.length - 2) * 5;
-        const fieldH = fieldRef.current?.clientHeight ?? GAME_HEIGHT;
-        const hRatio = Math.max(0, 1 - target.y / Math.max(1, fieldH));
-        const bonus = Math.round(50 * hRatio);
-        setScore((s) => s + base + bonus);
+        if (livesRef.current > 0) {
+          const base = 100 + Math.max(0, target.text.length - 2) * 5;
+          const fieldH = fieldRef.current?.clientHeight ?? GAME_HEIGHT;
+          const hRatio = Math.max(0, 1 - target.y / Math.max(1, fieldH));
+          const bonus = Math.round(50 * hRatio);
+          setScore((s) => s + base + bonus);
+        }
         setLastSolvedId(target.key);
         setInput("");
         setPreviewTargetId(null);
@@ -632,7 +622,6 @@ function useTypingRainEngine() {
     });
   };
 
-  // keep fresh end conditions without re-creating RAF each second
   const timeLeftRef = useRef(timeLeft);
   useEffect(() => {
     timeLeftRef.current = timeLeft;
@@ -650,7 +639,7 @@ function useTypingRainEngine() {
       if (lastTsRef.current == null) lastTsRef.current = ts;
       const dt = Math.min(0.05, (ts - lastTsRef.current) / 1000);
       lastTsRef.current = ts;
-      // Move and apply misses
+
       setEntities((prev) => {
         const moved = prev.map((e) => ({ ...e, y: e.y + e.vy * dt }));
         const survivors: FallingEntity[] = [];
@@ -665,16 +654,13 @@ function useTypingRainEngine() {
       });
       setTimeLeft((t) => Math.max(0, t - dt));
 
-      // Mixed-mode spawn:
-      // 1) If screen is empty -> spawn immediately ONE, skip timer for this frame
-      // 2) Else use timer + maxConcurrent rule
       if (
         timeLeftRef.current > 0 &&
         livesRef.current > 0 &&
         entsRef.current.length === 0
       ) {
         spawnOne();
-        lastSpawnRef.current = 0; // reset timer accumulator to avoid back-to-back spawns next frame
+        lastSpawnRef.current = 0;
       } else {
         lastSpawnRef.current += dt * 1000;
         if (lastSpawnRef.current >= spawnMs) {
@@ -693,12 +679,47 @@ function useTypingRainEngine() {
     return () => cancelAnimationFrame(raf);
   }, [running, spawnMs, maxConcurrent, speed, lang, toneMode]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "F2") {
+        e.preventDefault();
+        if (!running) start();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [running]);
+
   const setRuntimeData = (
     words: Record<WordId, WordMap> | null,
     sample: Sentence[] | null
   ) => {
+    // 1) Apply new dataset
     setWordsRt(words);
     setSampleRt(sample);
+
+    // 2) Purge existing entities & reset preview/guide states
+    setEntities([]);
+    setPreviewTargetId(null);
+    setPreviewLen(0);
+    setPreviewLabel("");
+    setPreviewIsCross(false);
+    setPreviewCrossInfo("");
+    setErrorFx(false);
+    setGuideMsg("");
+
+    // 3) Reset spawn timers for clean scheduling
+    lastSpawnRef.current = 0;
+    lastTsRef.current = null;
+
+    // 4) If game is running and still valid, spawn one fresh entity on next tick
+    if (running && timeLeftRef.current > 0 && livesRef.current > 0) {
+      setTimeout(() => {
+        if (entsRef.current.length === 0) {
+          try { spawnOne(); } catch {}
+        }
+      }, 0);
+    }
   };
 
   return {
@@ -731,6 +752,7 @@ function useTypingRainEngine() {
     banner,
     setBanner,
     fieldRef,
+    inputRef,
     previewTargetId,
     previewLen,
     previewLabel,
@@ -748,11 +770,9 @@ function useTypingRainEngine() {
 // ============================
 // Component UI
 // ============================
-// FIX: React.ReactElement to avoid "Cannot find namespace 'JSX'"
 export default function TypingRainApp(): React.ReactElement {
   const E = useTypingRainEngine();
 
-  // sanity checks (lightweight)
   const TESTS = [
     { name: "vi strict ≠", ok: equalsVi("người", "nguoi", "strict") === false },
     { name: "vi lenient =", ok: equalsVi("người", "nguoi", "lenient") === true },
@@ -760,7 +780,6 @@ export default function TypingRainApp(): React.ReactElement {
   ];
   const testsOK = TESTS.every((t) => t.ok);
 
-  // Lives pop animation on decrement
   const [lifePopKey, setLifePopKey] = useState(0);
   const prevLivesRef = useRef(E.lives);
   useEffect(() => {
@@ -768,19 +787,16 @@ export default function TypingRainApp(): React.ReactElement {
     prevLivesRef.current = E.lives;
   }, [E.lives]);
 
-  // Settings UI state
   const [showSettings, setShowSettings] = useState(false);
   const [offsetX, setOffsetX] = useState(0);
   const [offsetY, setOffsetY] = useState(0);
   const [showGuide, setShowGuide] = useState(false);
 
-  // Sheets data source UI
   const [sheetId, setSheetId] = useState<string>("");
-  const [sheetTab, setSheetTab] = useState<string>("Sheet1"); // name or gid
+  const [sheetTab, setSheetTab] = useState<string>("Sheet1");
   const [loadMsg, setLoadMsg] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
 
-  // Persist offsets UI
   useEffect(() => {
     try {
       const raw = localStorage.getItem("tr_settings_ui");
@@ -803,7 +819,6 @@ export default function TypingRainApp(): React.ReactElement {
     } catch {}
   }, [offsetX, offsetY, showGuide]);
 
-  // Persist data source (id/tab)
   useEffect(() => {
     try {
       const raw = localStorage.getItem("tr_data_source");
@@ -823,7 +838,6 @@ export default function TypingRainApp(): React.ReactElement {
     } catch {}
   }, [sheetId, sheetTab]);
 
-  // Try applying cached CSV on mount
   useEffect(() => {
     try {
       const raw = localStorage.getItem("tr_words_cache");
@@ -859,7 +873,7 @@ export default function TypingRainApp(): React.ReactElement {
     const isGid = /^\d+$/.test(sheetTab.trim());
     const param = isGid
       ? `gid=${encodeURIComponent(sheetTab.trim())}`
-      : `sheet=${encodeURIComponent(sheetTab.trim() || "Sheet1")}`;
+      : `sheet=${encodeURIComponent(sheetTab.trim() || "Sheet1")}`
     const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(
       sheetId
     )}/gviz/tq?tqx=out:csv&${param}`;
@@ -926,7 +940,7 @@ export default function TypingRainApp(): React.ReactElement {
         <div style={s.controls}>
           {!E.running ? (
             <button style={s.btnPrimary} onClick={E.start}>
-              Start
+              Start (F2)
             </button>
           ) : (
             <button style={s.btn} onClick={E.pause}>
@@ -936,7 +950,7 @@ export default function TypingRainApp(): React.ReactElement {
           <button style={s.btn} onClick={E.reset}>
             Reset
           </button>
-          <button style={s.btn} onClick={() => setShowSettings(true)}>
+            <button style={s.btn} onClick={() => setShowSettings(true)}>
             Settings
           </button>
           <label style={s.label}>
@@ -992,7 +1006,11 @@ export default function TypingRainApp(): React.ReactElement {
         </div>
 
         <div ref={E.fieldRef} style={s.playfield}>
-          <style>{keyframes}</style>
+          <style>{`
+            @keyframes tr-shake { 0%{transform:translateX(0)} 25%{transform:translateX(-4px)} 50%{transform:translateX(4px)} 75%{transform:translateX(-3px)} 100%{transform:translateX(0)} }
+            @keyframes tr-pulse { 0%{box-shadow:0 0 0 0 rgba(16,185,129,0.6)} 70%{box-shadow:0 0 0 12px rgba(16,185,129,0)} 100%{box-shadow:0 0 0 0 rgba(16,185,129,0)} }
+            @keyframes tr-pop { 0%{transform:scale(1.25); opacity:.6} 100%{transform:scale(1); opacity:1} }
+          `}</style>
           <div style={s.floor} />
           {E.entities.map((e) => {
             const isTarget = e.id === E.previewTargetId;
@@ -1011,9 +1029,7 @@ export default function TypingRainApp(): React.ReactElement {
                   ...s.entity,
                   transform: `translate(${e.x}px, ${e.y}px)`,
                   width: e.width,
-                  borderColor: isTarget
-                    ? "#10b981"
-                    : (s.entity as any).borderColor,
+                  borderColor: isTarget ? "#10b981" : (s.entity as any).borderColor,
                   animation: isTarget ? "tr-pulse 0.9s ease-out infinite" : undefined,
                 }}
               >
@@ -1031,7 +1047,6 @@ export default function TypingRainApp(): React.ReactElement {
             );
           })}
 
-          {/* Guide line */}
           {showGuide && (
             <div
               style={{
@@ -1047,9 +1062,9 @@ export default function TypingRainApp(): React.ReactElement {
             />
           )}
 
-          {/* Input dock */}
           <div style={{ ...s.inputDock }}>
             <input
+              ref={E.inputRef}
               value={E.input}
               onChange={(ev) => E.onInput(ev.target.value)}
               onKeyDown={(ev) => {
@@ -1076,6 +1091,7 @@ export default function TypingRainApp(): React.ReactElement {
               }}
             >
               <span>
+                {/* preview label/cross info */}
                 {E.previewLabel}{" "}
                 {E.previewCrossInfo && (
                   <span style={{ color: "#60a5fa" }}> {E.previewCrossInfo}</span>
@@ -1086,7 +1102,6 @@ export default function TypingRainApp(): React.ReactElement {
           </div>
         </div>
 
-        {/* Settings Modal */}
         {showSettings && (
           <div
             style={{
@@ -1150,10 +1165,7 @@ export default function TypingRainApp(): React.ReactElement {
                         value={offsetX}
                         onChange={(e) =>
                           setOffsetX(
-                            Math.max(
-                              -40,
-                              Math.min(40, parseInt(e.target.value || "0"))
-                            )
+                            Math.max(-40, Math.min(40, parseInt(e.target.value || "0")))
                           )
                         }
                         style={s.input}
@@ -1180,10 +1192,7 @@ export default function TypingRainApp(): React.ReactElement {
                         value={offsetY}
                         onChange={(e) =>
                           setOffsetY(
-                            Math.max(
-                              -40,
-                              Math.min(40, parseInt(e.target.value || "0"))
-                            )
+                            Math.max(-40, Math.min(40, parseInt(e.target.value || "0")))
                           )
                         }
                         style={s.input}
@@ -1223,8 +1232,7 @@ export default function TypingRainApp(): React.ReactElement {
                         onChange={(e) =>
                           E.setSpawnMs(
                             Math.max(
-                              300,
-                              Math.min(5000, parseInt(e.target.value || "1800") || 1800)
+                              300, Math.min(5000, parseInt(e.target.value || "1800") || 1800)
                             )
                           )
                         }
@@ -1235,8 +1243,7 @@ export default function TypingRainApp(): React.ReactElement {
                         onChange={(e) =>
                           E.setSpawnMs(
                             Math.max(
-                              300,
-                              Math.min(5000, parseInt(e.target.value || "1800") || 1800)
+                              300, Math.min(5000, parseInt(e.target.value || "1800") || 1800)
                             )
                           )
                         }
@@ -1260,10 +1267,7 @@ export default function TypingRainApp(): React.ReactElement {
                         value={E.speed}
                         onChange={(e) =>
                           E.setSpeed(
-                            Math.max(
-                              20,
-                              Math.min(300, parseInt(e.target.value || "35") || 35)
-                            )
+                            Math.max(20, Math.min(300, parseInt(e.target.value || "35") || 35))
                           )
                         }
                       />
@@ -1272,10 +1276,7 @@ export default function TypingRainApp(): React.ReactElement {
                         value={E.speed}
                         onChange={(e) =>
                           E.setSpeed(
-                            Math.max(
-                              20,
-                              Math.min(300, parseInt(e.target.value || "35") || 35)
-                            )
+                            Math.max(20, Math.min(300, parseInt(e.target.value || "35") || 35))
                           )
                         }
                         style={s.input}
@@ -1298,10 +1299,7 @@ export default function TypingRainApp(): React.ReactElement {
                         value={E.maxConcurrent}
                         onChange={(e) =>
                           E.setMaxConcurrent(
-                            Math.max(
-                              1,
-                              Math.min(9, parseInt(e.target.value || "5") || 5)
-                            )
+                            Math.max(1, Math.min(9, parseInt(e.target.value || "5") || 5))
                           )
                         }
                       />
@@ -1310,10 +1308,7 @@ export default function TypingRainApp(): React.ReactElement {
                         value={E.maxConcurrent}
                         onChange={(e) =>
                           E.setMaxConcurrent(
-                            Math.max(
-                              1,
-                              Math.min(9, parseInt(e.target.value || "5") || 5)
-                            )
+                            Math.max(1, Math.min(9, parseInt(e.target.value || "5") || 5))
                           )
                         }
                         style={s.input}
@@ -1413,7 +1408,7 @@ export default function TypingRainApp(): React.ReactElement {
 
         <footer style={s.footer}>
           Sheets · Multilingual · VI tone · No-clipping spawns · Enter-confirm ·
-          Preview highlight · Error beep · Mixed-mode spawn
+          Preview highlight · Error beep · Mixed-mode spawn · F2 start · Auto focus · Score freeze on 0 life
         </footer>
       </div>
     </div>
