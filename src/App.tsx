@@ -854,12 +854,6 @@ export default function TypingRainApp(): React.ReactElement {
   }, []);
 
   const s = styles;
-  const keyframes = `
-  @keyframes tr-shake { 0%{transform:translateX(0)} 25%{transform:translateX(-4px)} 50%{transform:translateX(4px)} 75%{transform:translateX(-3px)} 100%{transform:translateX(0)} }
-  @keyframes tr-pulse { 0%{box-shadow:0 0 0 0 rgba(16,185,129,0.6)} 70%{box-shadow:0 0 0 12px rgba(16,185,129,0)} 100%{box-shadow:0 0 0 0 rgba(16,185,129,0)} }
-  @keyframes tr-pop { 0%{transform:scale(1.25); opacity:.6} 100%{transform:scale(1); opacity:1} }
-  `;
-
   const currentWords = E.wordsRt ?? WORDS_DEFAULT;
   const lastSolved = E.lastSolvedId ? currentWords[E.lastSolvedId] : null;
 
