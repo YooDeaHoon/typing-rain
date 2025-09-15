@@ -2,18 +2,27 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Typing Rain – v15 FULL (Sheets + Multilingual + UX polish) + Mixed-mode spawn
- * 
- * Added features (per request):
- * - Auto focus input when Start pressed
- * - F2 global shortcut to Start (only when not running)
- * - Score frozen when lives == 0 (input still allowed; entities can still be cleared)
- * 
- * No truncation / full source. Fix1: avoid parameter destructuring in .filter to satisfy certain Babel parsers.
+ *
+ * This build includes:
+ *  - Auto focus input when Start pressed
+ *  - F2 global shortcut to Start (only when not running)
+ *  - Score frozen when lives == 0 (input still allowed; entities can still be cleared)
+ *  - Option A: When runtime dataset changes, purge all existing entities & reset preview;
+ *              if running and still time/lives left, spawn 1 entity on next tick.
+ *  - Speed slider min changed from 20 -> 1 (range 1–300)
+ *  - Enter-to-confirm; IME handling is kept simple (can add composition guard if needed)
+ *  - No-clipping spawns (measureText); random X within safe margins
+ *  - Lives shown as 🐱 with pop animation on loss
+ *  - Settings modal: input alignment offsets, guide line toggle, spawn interval, fall speed, max concurrent
+ *  - Last solved display: shows all language variants for the solved word
+ *  - Google Sheets loader (public CSV via gviz) with local cache
+ *  - Persistence: tr_settings, tr_data_source, tr_words_cache, tr_settings_ui
+ *  - Cross-language preview highlight (same/cross language); full-match confirmation across languages
+ *  - Mixed-mode spawn: if entities go to 0 while running (and time/lives remain), immediately spawn 1 item; otherwise timer/maxConcurrent
+ *
+ * No truncation / full source.
  */
 
-// ============================
-// Types
-// ============================
 type LangKey = "ko" | "en" | "vi" | "th";
 type WordId = string;
 type ToneMode = "strict" | "lenient"; // vi only
@@ -38,9 +47,6 @@ interface FallingEntity {
   width: number;
 }
 
-// ============================
-// Constants & defaults
-// ============================
 const GAME_HEIGHT = 420;
 const FLOOR_OFFSET = 60;
 const H_MARGIN = 12;
@@ -63,9 +69,6 @@ const SAMPLE_DEFAULT: Sentence[] = Object.keys(WORDS_DEFAULT).map((id) => ({
   weight: 1,
 }));
 
-// ============================
-// Normalization helpers
-// ============================
 function safeNormalize(
   s: string,
   form: "NFC" | "NFD" | "NFKC" | "NFKD" = "NFC"
@@ -101,9 +104,6 @@ function normCommon(s: unknown) {
   return safeNormalize(String(s ?? ""), "NFC").toLowerCase().trim();
 }
 
-// ============================
-// Cross-language helpers
-// ============================
 function normForLang(text: string, lang: LangKey, toneMode: ToneMode): string {
   if (lang === "vi")
     return toneMode === "lenient"
@@ -186,9 +186,6 @@ function anyFullEqual(
   return false;
 }
 
-// ============================
-// RNG + weighted pick + measure
-// ============================
 function useRng(seedInit = Date.now()) {
   const seedRef = useRef(seedInit % 2147483647);
   return useMemo(
@@ -228,9 +225,6 @@ function makeTextMeasurer() {
   };
 }
 
-// ============================
-// CSV helpers (Sheets)
-// ============================
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let cur: string[] = [];
@@ -330,13 +324,10 @@ function buildRuntimeFromCsv(text: string): {
   return { words, sample };
 }
 
-// ============================
-// Engine hook
-// ============================
 function useTypingRainEngine() {
   const [lang, setLang] = useState<LangKey>("ko");
   const [toneMode, setToneMode] = useState<ToneMode>("strict");
-  const [speed, setSpeed] = useState(35);
+  const [speed, setSpeed] = useState(35); // px/sec
   const [spawnMs, setSpawnMs] = useState(1800);
   const [maxConcurrent, setMaxConcurrent] = useState(5);
   const [timeLimit, setTimeLimit] = useState(120);
@@ -388,7 +379,7 @@ function useTypingRainEngine() {
         if (typeof o.spawnMs === "number")
           setSpawnMs(Math.max(300, Math.min(5000, o.spawnMs)));
         if (typeof o.speed === "number")
-          setSpeed(Math.max(20, Math.min(300, o.speed)));
+          setSpeed(Math.max(1, Math.min(300, o.speed)));
         if (typeof o.maxConcurrent === "number")
           setMaxConcurrent(Math.max(1, Math.min(9, o.maxConcurrent)));
       }
@@ -694,11 +685,9 @@ function useTypingRainEngine() {
     words: Record<WordId, WordMap> | null,
     sample: Sentence[] | null
   ) => {
-    // 1) Apply new dataset
     setWordsRt(words);
     setSampleRt(sample);
 
-    // 2) Purge existing entities & reset preview/guide states
     setEntities([]);
     setPreviewTargetId(null);
     setPreviewLen(0);
@@ -708,11 +697,9 @@ function useTypingRainEngine() {
     setErrorFx(false);
     setGuideMsg("");
 
-    // 3) Reset spawn timers for clean scheduling
     lastSpawnRef.current = 0;
     lastTsRef.current = null;
 
-    // 4) If game is running and still valid, spawn one fresh entity on next tick
     if (running && timeLeftRef.current > 0 && livesRef.current > 0) {
       setTimeout(() => {
         if (entsRef.current.length === 0) {
@@ -767,9 +754,6 @@ function useTypingRainEngine() {
   } as const;
 }
 
-// ============================
-// Component UI
-// ============================
 export default function TypingRainApp(): React.ReactElement {
   const E = useTypingRainEngine();
 
@@ -854,6 +838,7 @@ export default function TypingRainApp(): React.ReactElement {
   }, []);
 
   const s = styles;
+
   const currentWords = E.wordsRt ?? WORDS_DEFAULT;
   const lastSolved = E.lastSolvedId ? currentWords[E.lastSolvedId] : null;
 
@@ -867,7 +852,7 @@ export default function TypingRainApp(): React.ReactElement {
     const isGid = /^\d+$/.test(sheetTab.trim());
     const param = isGid
       ? `gid=${encodeURIComponent(sheetTab.trim())}`
-      : `sheet=${encodeURIComponent(sheetTab.trim() || "Sheet1")}`
+      : `sheet=${encodeURIComponent(sheetTab.trim() || "Sheet1")}`;
     const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(
       sheetId
     )}/gviz/tq?tqx=out:csv&${param}`;
@@ -944,14 +929,14 @@ export default function TypingRainApp(): React.ReactElement {
           <button style={s.btn} onClick={E.reset}>
             Reset
           </button>
-            <button style={s.btn} onClick={() => setShowSettings(true)}>
+          <button style={s.btn} onClick={() => setShowSettings(true)}>
             Settings
           </button>
           <label style={s.label}>
             Language
             <select
               value={E.lang}
-              onChange={(e) => E.setLang(e.target.value as LangKey)}
+              onChange={(e) => E.setLang(e.target.value as any)}
               style={s.select}
             >
               <option value="ko">ko</option>
@@ -965,7 +950,7 @@ export default function TypingRainApp(): React.ReactElement {
               VI Tone
               <select
                 value={E.toneMode}
-                onChange={(e) => E.setToneMode(e.target.value as ToneMode)}
+                onChange={(e) => E.setToneMode(e.target.value as any)}
                 style={s.select}
               >
                 <option value="strict">Strict</option>
@@ -975,15 +960,7 @@ export default function TypingRainApp(): React.ReactElement {
           )}
           <div style={{ flexBasis: "100%", height: 0 }} />
           <div
-            style={{
-              marginTop: 6,
-              fontSize: 12,
-              opacity: 0.9,
-              maxWidth: "100%",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
+            style={{ marginTop: 6, fontSize: 12, opacity: 0.9, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
           >
             <strong>Last solved:</strong>{" "}
             {lastSolved ? (
@@ -1085,7 +1062,6 @@ export default function TypingRainApp(): React.ReactElement {
               }}
             >
               <span>
-                {/* preview label/cross info */}
                 {E.previewLabel}{" "}
                 {E.previewCrossInfo && (
                   <span style={{ color: "#60a5fa" }}> {E.previewCrossInfo}</span>
@@ -1255,13 +1231,13 @@ export default function TypingRainApp(): React.ReactElement {
                       <span>Speed (px/s)</span>
                       <input
                         type="range"
-                        min={20}
+                        min={1}
                         max={300}
                         step={5}
                         value={E.speed}
                         onChange={(e) =>
                           E.setSpeed(
-                            Math.max(20, Math.min(300, parseInt(e.target.value || "35") || 35))
+                            Math.max(1, Math.min(300, parseInt(e.target.value || "35") || 35))
                           )
                         }
                       />
@@ -1270,7 +1246,7 @@ export default function TypingRainApp(): React.ReactElement {
                         value={E.speed}
                         onChange={(e) =>
                           E.setSpeed(
-                            Math.max(20, Math.min(300, parseInt(e.target.value || "35") || 35))
+                            Math.max(1, Math.min(300, parseInt(e.target.value || "35") || 35))
                           )
                         }
                         style={s.input}
@@ -1409,9 +1385,6 @@ export default function TypingRainApp(): React.ReactElement {
   );
 }
 
-// ============================
-// Styles (inline)
-// ============================
 const styles: Record<string, React.CSSProperties> = {
   app: {
     minHeight: "100vh",
